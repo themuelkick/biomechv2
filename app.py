@@ -416,7 +416,7 @@ with tab4:
                 st.error(f"Error deleting session: {e}")
 
     # ---- Delete a Player ----
-    st.subheader("🧹 Delete Player")
+    st.subheader(" Delete Player")
 
     selected_player = st.selectbox("Select player to delete", players_df["name"], key="delete_player")
     player_row = players_df[players_df["name"] == selected_player].iloc[0]
