@@ -121,7 +121,7 @@ with tab1:
                 video_filename = f"{name.replace(' ', '_')}_{session_name.replace(' ', '_')}.mp4"
                 video_path = os.path.join(VIDEO_DIR, video_filename)
 
-        csv_file = st.file_uploader("Upload Kinematic CSV", type="csv")
+        csv_file = st.file_uploader("Upload Kinovea CSV", type="csv")
         submitted = st.form_submit_button("Upload")
 
         if submitted and (youtube_link or video_path):
@@ -208,15 +208,12 @@ with tab2:
                     st.warning("⚠️ Local video file not found.")
 
             st.subheader("Session Notes")
-            if session_row["notes"]:
-                st.markdown(session_row["notes"].replace("\n", "<br>"), unsafe_allow_html=True)
-            else:
-                st.info("No notes provided.")
+            st.info(session_row["notes"] if session_row["notes"] else "No notes provided.")
 
             st.subheader("Kinematic Data")
             csv_path = session_row["kinovea_csv"]
             if not csv_path or not os.path.exists(csv_path):
-                st.info("No kinematic data uploaded for this session.")
+                st.info("No Kinovea data uploaded for this session.")
             else:
                 try:
                     kin_df = pd.read_csv(csv_path)
@@ -277,14 +274,11 @@ with tab3:
                         st.warning("⚠️ Local video file not found for left session.")
 
                 st.subheader("Session Notes (Left)")
-                if left_row["notes"]:
-                    st.markdown(left_row["notes"].replace("\n", "<br>"), unsafe_allow_html=True)
-                else:
-                    st.info("No notes provided.")
+                st.info(left_row["notes"] if left_row["notes"] else "No notes provided.")
 
                 csv_path_left = left_row.kinovea_csv
                 if not csv_path_left or not os.path.exists(csv_path_left):
-                    st.info("No Kinematic data uploaded for this session.")
+                    st.info("No Kinovea data uploaded for this session.")
                 else:
                     try:
                         df_left = pd.read_csv(csv_path_left)
@@ -333,14 +327,11 @@ with tab3:
                         st.warning("⚠️ Local video file not found for right session.")
 
                 st.subheader("Session Notes (Right)")
-                if right_row["notes"]:
-                    st.markdown(right_row["notes"].replace("\n", "<br>"), unsafe_allow_html=True)
-                else:
-                    st.info("No notes provided.")
+                st.info(right_row["notes"] if right_row["notes"] else "No notes provided.")
 
                 csv_path_right = right_row.kinovea_csv
                 if not csv_path_right or not os.path.exists(csv_path_right):
-                    st.info("No Kinematic data uploaded for this session.")
+                    st.info("No Kinovea data uploaded for this session.")
                 else:
                     try:
                         df_right = pd.read_csv(csv_path_right)
@@ -361,98 +352,134 @@ with tab3:
 
 # === TAB 4: Admin Tools ===
 with tab4:
-    st.header(" Admin Tools")
+    with st.expander(" Admin Tools"):
+        st.subheader("Delete Players or Sessions")
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
 
-    players_df = pd.read_sql("SELECT * FROM players", conn)
-    sessions_df = pd.read_sql("SELECT * FROM sessions", conn)
-
-    # ---- Raw Database Viewer ----
-    st.subheader(" Raw Database Tables")
-
-    with st.expander("View Players Table"):
-        st.dataframe(players_df)
-
-    with st.expander("View Sessions Table"):
-        st.dataframe(sessions_df)
-
-    # ---- Delete a Session (Organized by Player) ----
-    st.subheader(" Delete Session")
-
-    selected_admin_player = st.selectbox("Select a player", players_df["name"], key="admin_player_select")
-    admin_player_id = int(players_df[players_df["name"] == selected_admin_player]["id"].values[0])
-
-    player_sessions_df = pd.read_sql("SELECT * FROM sessions WHERE player_id = ?", conn, params=(admin_player_id,))
-    player_sessions_df["label"] = player_sessions_df["date"] + " - " + player_sessions_df["session_name"]
-
-    if player_sessions_df.empty:
-        st.warning("This player has no sessions.")
-    else:
-        session_to_delete = st.selectbox("Select a session to delete", player_sessions_df["label"],
-                                         key="admin_session_select")
-
-        if st.button(" Delete Selected Session"):
-            session_row = player_sessions_df[player_sessions_df["label"] == session_to_delete].iloc[0]
-            csv_path = session_row["kinovea_csv"]
-            video_path = session_row.get("video_source", "")
-
-            try:
-                # Delete CSV
-                if csv_path and os.path.exists(csv_path):
-                    os.remove(csv_path)
-
-                # Delete video file if locally stored
-                if video_path and not video_path.startswith("http") and os.path.exists(video_path):
-                    os.remove(video_path)
-
-                # Delete session from DB
-                c.execute("DELETE FROM sessions WHERE id = ?", (session_row["id"],))
-                conn.commit()
-
-                st.success(f" Deleted session: {session_to_delete}")
-            except Exception as e:
-                st.error(f"Error deleting session: {e}")
-
-    # ---- Delete a Player ----
-    st.subheader(" Delete Player")
-
-    selected_player = st.selectbox("Select player to delete", players_df["name"], key="delete_player")
-    player_row = players_df[players_df["name"] == selected_player].iloc[0]
-
-    player_sessions = sessions_df[sessions_df["player_id"] == player_row["id"]]
-    if not player_sessions.empty:
-        st.warning("This player has sessions and cannot be deleted. Please delete all sessions first.")
-    else:
-        if st.button(" Delete Selected Player"):
-            try:
-                c.execute("DELETE FROM players WHERE id = ?", (player_row["id"],))
-                conn.commit()
-                st.success(" Player deleted.")
-            except Exception as e:
-                st.error(f"Error deleting player: {e}")
-
-    # ---- Auto-Remove Broken Sessions ----
-    st.subheader(" Clean Up Broken Sessions")
-
-    if st.button("Remove Sessions with Missing CSV Files"):
-        removed_count = 0
+        players_df = pd.read_sql("SELECT * FROM players", conn)
         sessions_df = pd.read_sql("SELECT * FROM sessions", conn)
 
-        for _, row in sessions_df.iterrows():
-            csv_path = row["kinovea_csv"]
-            if csv_path and not os.path.exists(csv_path):
-                try:
-                    c.execute("DELETE FROM sessions WHERE id = ?", (row["id"],))
-                    conn.commit()
-                    removed_count += 1
-                except Exception as e:
-                    st.error(f"Error removing session {row['session_name']}: {e}")
+        # ---- Delete a Session ----
+        st.markdown("### Delete a Session")
 
-        if removed_count > 0:
-            st.success(f" Removed {removed_count} broken session(s).")
+        selected_admin_player = st.selectbox("Select a player (to delete their session)", players_df["name"],
+                                             key="admin_player_select")
+        admin_player_id = int(players_df[players_df["name"] == selected_admin_player]["id"].values[0])
+
+        player_sessions_df = pd.read_sql("SELECT * FROM sessions WHERE player_id = ?", conn, params=(admin_player_id,))
+        player_sessions_df["label"] = player_sessions_df["date"] + " - " + player_sessions_df["session_name"]
+
+        if player_sessions_df.empty:
+            st.warning("This player has no sessions.")
         else:
-            st.info(" No broken sessions found.")
+            session_to_delete = st.selectbox("Select a session to delete", player_sessions_df["label"],
+                                             key="admin_session_select")
+
+            if st.button(" Delete Selected Session"):
+                session_row = player_sessions_df[player_sessions_df["label"] == session_to_delete].iloc[0]
+                csv_path = session_row["kinovea_csv"]
+                video_source = session_row["video_source"]
+
+                try:
+                    if csv_path and os.path.exists(csv_path):
+                        os.remove(csv_path)
+                    if video_source and not video_source.startswith("http") and os.path.exists(video_source):
+                        os.remove(video_source)
+
+                    c.execute("DELETE FROM sessions WHERE id = ?", (session_row["id"],))
+                    conn.commit()
+
+                    st.success(f"✅ Deleted session: {session_to_delete}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error deleting session: {e}")
+
+        # ---- Delete a Player ----
+        st.markdown("---")
+        st.markdown("### Delete a Player (Only if they have no sessions)")
+
+        player_names = players_df["name"].tolist()
+        selected_player = st.selectbox("Select a player to delete", player_names, key="delete_player")
+        player_row = players_df[players_df["name"] == selected_player].iloc[0]
+
+        player_sessions = sessions_df[sessions_df["player_id"] == player_row["id"]]
+
+        if not player_sessions.empty:
+            st.warning("This player has sessions and cannot be deleted. Please delete all their sessions first.")
+        else:
+            if st.button(" Delete Selected Player"):
+                try:
+                    c.execute("DELETE FROM players WHERE id = ?", (player_row["id"],))
+                    conn.commit()
+                    st.success("✅ Player deleted successfully.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error deleting player: {e}")
+
+        # ---- Clean Up Broken Sessions ----
+        st.markdown("---")
+        st.subheader(" Clean Up Broken Sessions")
+
+        if st.button("Remove Sessions with Missing CSVs or Local Videos"):
+            removed_count = 0
+            sessions_df = pd.read_sql("SELECT * FROM sessions", conn)
+
+            for _, row in sessions_df.iterrows():
+                csv_path = row["kinovea_csv"]
+                video_source = row["video_source"]
+
+                missing_csv = csv_path and isinstance(csv_path, str) and not os.path.exists(csv_path)
+                is_local_video = video_source and not video_source.startswith("http")
+                missing_video = is_local_video and not os.path.exists(video_source)
+
+                if missing_csv or missing_video:
+                    try:
+                        c.execute("DELETE FROM sessions WHERE id = ?", (row["id"],))
+                        conn.commit()
+                        removed_count += 1
+                    except Exception as e:
+                        st.error(f" Error deleting session {row['session_name']}: {e}")
+
+            if removed_count > 0:
+                st.success(f"✅ Removed {removed_count} broken session(s) with missing CSV or local video.")
+                st.rerun()
+            else:
+                st.info("No broken sessions found.")
+
+        # ---- Clean Up Orphaned Players ----
+        st.markdown("---")
+        st.subheader(" Clean Up Players With No Sessions")
+
+        if st.button("Remove Players With No Sessions"):
+            orphaned_players = pd.read_sql(
+                "SELECT * FROM players WHERE id NOT IN (SELECT DISTINCT player_id FROM sessions)",
+                conn
+            )
+            count = 0
+            for _, row in orphaned_players.iterrows():
+                try:
+                    c.execute("DELETE FROM players WHERE id = ?", (row["id"],))
+                    conn.commit()
+                    count += 1
+                except Exception as e:
+                    st.error(f"Error deleting player {row['name']}: {e}")
+
+            if count > 0:
+                st.success(f"✅ Removed {count} player(s) with no sessions.")
+                st.rerun()
+            else:
+                st.info("No players without sessions found.")
+
+# === Debug: Show raw tables ===
+if st.checkbox(" Show Raw Database (Players + Sessions)", value=False):
+    conn = sqlite3.connect(DB_PATH)
+    players = pd.read_sql("SELECT * FROM players", conn)
+    sessions = pd.read_sql("SELECT * FROM sessions", conn)
+    st.subheader(" Players Table")
+    st.dataframe(players)
+    st.subheader(" Sessions Table")
+    st.dataframe(sessions)
 
 
