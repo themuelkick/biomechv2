@@ -34,6 +34,17 @@ COLOR_MAP = {
     "Angle 1 - b": "#e377c2"
 }
 
+def is_missing_file(path):
+    if not path:
+        return True
+    if isinstance(path, str):
+        if path.startswith("http"):
+            # For Supabase URLs, you could optionally ping them, but for now assume always valid
+            return False
+        else:
+            return not os.path.exists(path)
+    return True
+
 # === DB Init ===
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -221,7 +232,8 @@ def main_app(user_email):
                         st.warning("⚠️ Local video file not found.")
 
                 st.subheader("Session Notes")
-                st.info(session_row["notes"] if session_row["notes"] else "No notes provided.")
+                st.markdown(session_row["notes"].replace('\n', '  \n') if session_row["notes"] else "_No notes provided._", unsafe_allow_html=True)
+
 
                 st.subheader("Kinematic Data")
                 csv_path = session_row["kinovea_csv"]
@@ -296,7 +308,7 @@ def main_app(user_email):
                             st.warning("⚠️ Local video file not found for left session.")
 
                     st.subheader("Session Notes (Left)")
-                    st.info(left_row["notes"] if left_row["notes"] else "No notes provided.")
+                    st.markdown(left_row["notes"].replace('\n', '  \n') if left_row["notes"] else "_No notes provided._", unsafe_allow_html=True)
 
                     csv_path_left = left_row["kinovea_csv"]
                     if not csv_path_left:
@@ -359,7 +371,8 @@ def main_app(user_email):
                             st.warning("⚠️ Local video file not found for right session.")
 
                     st.subheader("Session Notes (Right)")
-                    st.info(right_row["notes"] if right_row["notes"] else "No notes provided.")
+                    st.markdown(right_row["notes"].replace('\n', '  \n') if right_row["notes"] else "_No notes provided._", unsafe_allow_html=True)
+
 
                     csv_path_right = right_row["kinovea_csv"]
                     if not csv_path_right:
@@ -422,10 +435,11 @@ def main_app(user_email):
                     video_source = session_row["video_source"]
 
                     try:
-                        if csv_path and os.path.exists(csv_path):
+                        if not csv_path.startswith("http") and os.path.exists(csv_path):
                             os.remove(csv_path)
-                        if video_source and not video_source.startswith("http") and os.path.exists(video_source):
-                            os.remove(video_source)
+                        if video_source and isinstance(video_source, str) and not video_source.startswith("http"):
+                            if os.path.exists(video_source):
+                                os.remove(video_source)
 
                         c.execute("DELETE FROM sessions WHERE id = ?", (session_row["id"],))
                         conn.commit()
@@ -469,11 +483,7 @@ def main_app(user_email):
                     csv_path = row["kinovea_csv"]
                     video_source = row["video_source"]
 
-                    missing_csv = csv_path and isinstance(csv_path, str) and not os.path.exists(csv_path)
-                    is_local_video = video_source and not video_source.startswith("http")
-                    missing_video = is_local_video and not os.path.exists(video_source)
-
-                    if missing_csv or missing_video:
+                    if is_missing_file(csv_path) or is_missing_file(video_source):
                         try:
                             c.execute("DELETE FROM sessions WHERE id = ?", (row["id"],))
                             conn.commit()
