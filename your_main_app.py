@@ -5,6 +5,8 @@ from datetime import datetime
 import re
 import plotly.graph_objects as go
 import os
+import io
+import requests
 from auth import sign_out
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -117,6 +119,7 @@ def main_app(user_email):
             youtube_link = ""
             video_source = ""
             video_filename = ""
+            csv_url = None
 
             if video_option == "YouTube Link":
                 youtube_link = st.text_input("YouTube Link")
@@ -130,7 +133,6 @@ def main_app(user_email):
                             file=uploaded_video.getvalue(),
                             file_options={"content-type": uploaded_video.type}
                         )
-                        # Build public URL
                         video_source = f"https://{SUPABASE_URL.split('//')[1]}/storage/v1/object/public/videos/{video_filename}"
                     except Exception as e:
                         st.error(f"Video upload to Supabase failed: {e}")
@@ -139,21 +141,25 @@ def main_app(user_email):
             submitted = st.form_submit_button("Upload")
 
             if submitted and (youtube_link or video_source):
-                # Save CSV if provided
-                csv_path = None
                 if csv_file:
-                    csv_path = f"{DATA_DIR}/{name.replace(' ', '_')}_{session_name.replace(' ', '_')}.csv"
-                    with open(csv_path, "wb") as f:
-                        f.write(csv_file.read())
+                    csv_filename = f"{name.replace(' ', '_')}_{session_name.replace(' ', '_')}.csv"
+                    try:
+                        supabase.storage.from_("csvs").upload(
+                            path=csv_filename,
+                            file=csv_file.getvalue(),
+                            file_options={"content-type": "text/csv"}
+                        )
+                        csv_url = f"https://{SUPABASE_URL.split('//')[1]}/storage/v1/object/public/csvs/{csv_filename}"
+                    except Exception as e:
+                        st.error(f"CSV upload to Supabase failed: {e}")
 
-                # Finalize video source
                 final_video_source = youtube_link if video_option == "YouTube Link" else video_source
+                final_csv_path = csv_url  # No local path used now
 
                 # DB insert
                 conn = sqlite3.connect(DB_PATH)
                 c = conn.cursor()
 
-                # Normalize and check existing player
                 c.execute("SELECT id FROM players WHERE LOWER(name)=? AND LOWER(team)=?", (name.lower(), team.lower()))
                 result = c.fetchone()
 
@@ -163,11 +169,10 @@ def main_app(user_email):
                     c.execute("INSERT INTO players (name, team, notes) VALUES (?, ?, ?)", (name, team, ""))
                     player_id = int(c.lastrowid)
 
-                # Insert session (CSV path may be None)
                 c.execute('''INSERT INTO sessions 
                              (player_id, date, session_name, video_source, kinovea_csv, notes)
                              VALUES (?, ?, ?, ?, ?, ?)''',
-                          (player_id, str(session_date), session_name, final_video_source, csv_path, notes))
+                          (player_id, str(session_date), session_name, final_video_source, final_csv_path, notes))
                 conn.commit()
                 conn.close()
                 st.success("✅ Session uploaded!")
@@ -220,11 +225,16 @@ def main_app(user_email):
 
                 st.subheader("Kinematic Data")
                 csv_path = session_row["kinovea_csv"]
-                if not csv_path or not os.path.exists(csv_path):
+                if not csv_path:
                     st.info("No Kinovea data uploaded for this session.")
                 else:
                     try:
-                        kin_df = pd.read_csv(csv_path)
+                        if csv_path.startswith("http"):
+                            response = requests.get(csv_path)
+                            kin_df = pd.read_csv(io.StringIO(response.text))
+                        else:
+                            kin_df = pd.read_csv(csv_path)
+
                         st.write(kin_df.head())
 
                         if "Time (ms)" in kin_df.columns:
@@ -257,7 +267,8 @@ def main_app(user_email):
             st.markdown("### Left Player")
             player_left = st.selectbox("Select Player (Left)", player_df["name"], key="left_player")
             player_left_id = int(player_df[player_df["name"] == player_left]["id"].values[0])
-            left_sessions = pd.read_sql_query("SELECT * FROM sessions WHERE player_id = ?", conn, params=(player_left_id,))
+            left_sessions = pd.read_sql_query("SELECT * FROM sessions WHERE player_id = ?", conn,
+                                              params=(player_left_id,))
 
             if left_sessions.empty:
                 st.warning("No sessions found for this player.")
@@ -287,12 +298,17 @@ def main_app(user_email):
                     st.subheader("Session Notes (Left)")
                     st.info(left_row["notes"] if left_row["notes"] else "No notes provided.")
 
-                    csv_path_left = left_row.kinovea_csv
-                    if not csv_path_left or not os.path.exists(csv_path_left):
+                    csv_path_left = left_row["kinovea_csv"]
+                    if not csv_path_left:
                         st.info("No Kinovea data uploaded for this session.")
                     else:
                         try:
-                            df_left = pd.read_csv(csv_path_left)
+                            if csv_path_left.startswith("http"):
+                                response = requests.get(csv_path_left)
+                                df_left = pd.read_csv(io.StringIO(response.text))
+                            else:
+                                df_left = pd.read_csv(csv_path_left)
+
                             if "Time (ms)" in df_left.columns:
                                 available_metrics_left = [col for col in df_left.columns if col in COLOR_MAP]
                                 selected_left_metrics = st.multiselect(
@@ -301,7 +317,8 @@ def main_app(user_email):
                                     default=available_metrics_left,
                                     key="metric_select_left"
                                 )
-                                plot_custom_lines(df_left, chart_key="left_plot", selected_metrics=selected_left_metrics)
+                                plot_custom_lines(df_left, chart_key="left_plot",
+                                                  selected_metrics=selected_left_metrics)
                             else:
                                 st.warning("Column 'Time (ms)' not found in left session.")
                                 st.line_chart(df_left.select_dtypes(include=['float', 'int']))
@@ -313,7 +330,8 @@ def main_app(user_email):
             st.markdown("### Right Player")
             player_right = st.selectbox("Select Player (Right)", player_df["name"], key="right_player")
             player_right_id = int(player_df[player_df["name"] == player_right]["id"].values[0])
-            right_sessions = pd.read_sql_query("SELECT * FROM sessions WHERE player_id = ?", conn, params=(player_right_id,))
+            right_sessions = pd.read_sql_query("SELECT * FROM sessions WHERE player_id = ?", conn,
+                                               params=(player_right_id,))
 
             if right_sessions.empty:
                 st.warning("No sessions found for this player.")
@@ -343,12 +361,17 @@ def main_app(user_email):
                     st.subheader("Session Notes (Right)")
                     st.info(right_row["notes"] if right_row["notes"] else "No notes provided.")
 
-                    csv_path_right = right_row.kinovea_csv
-                    if not csv_path_right or not os.path.exists(csv_path_right):
+                    csv_path_right = right_row["kinovea_csv"]
+                    if not csv_path_right:
                         st.info("No Kinovea data uploaded for this session.")
                     else:
                         try:
-                            df_right = pd.read_csv(csv_path_right)
+                            if csv_path_right.startswith("http"):
+                                response = requests.get(csv_path_right)
+                                df_right = pd.read_csv(io.StringIO(response.text))
+                            else:
+                                df_right = pd.read_csv(csv_path_right)
+
                             if "Time (ms)" in df_right.columns:
                                 available_metrics_right = [col for col in df_right.columns if col in COLOR_MAP]
                                 selected_right_metrics = st.multiselect(
@@ -357,7 +380,8 @@ def main_app(user_email):
                                     default=available_metrics_right,
                                     key="metric_select_right"
                                 )
-                                plot_custom_lines(df_right, chart_key="right_plot", selected_metrics=selected_right_metrics)
+                                plot_custom_lines(df_right, chart_key="right_plot",
+                                                  selected_metrics=selected_right_metrics)
                             else:
                                 st.warning("Column 'Time (ms)' not found in right session.")
                                 st.line_chart(df_right.select_dtypes(include=['float', 'int']))
