@@ -6,6 +6,14 @@ import re
 import plotly.graph_objects as go
 import os
 from auth import sign_out
+from dotenv import load_dotenv
+from supabase import create_client, Client
+
+load_dotenv()
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # === CONSTANTS ===
 VIDEO_DIR = "videos"
@@ -107,7 +115,8 @@ def main_app(user_email):
             notes = st.text_area("Notes")
 
             youtube_link = ""
-            video_path = ""
+            video_source = ""
+            video_filename = ""
 
             if video_option == "YouTube Link":
                 youtube_link = st.text_input("YouTube Link")
@@ -115,12 +124,21 @@ def main_app(user_email):
                 uploaded_video = st.file_uploader("Upload Video File", type=["mp4", "mov", "avi"])
                 if uploaded_video:
                     video_filename = f"{name.replace(' ', '_')}_{session_name.replace(' ', '_')}.mp4"
-                    video_path = os.path.join(VIDEO_DIR, video_filename)
+                    try:
+                        supabase.storage.from_("videos").upload(
+                            path=video_filename,
+                            file=uploaded_video.getvalue(),
+                            file_options={"content-type": uploaded_video.type}
+                        )
+                        # Build public URL
+                        video_source = f"https://{SUPABASE_URL.split('//')[1]}/storage/v1/object/public/videos/{video_filename}"
+                    except Exception as e:
+                        st.error(f"Video upload to Supabase failed: {e}")
 
             csv_file = st.file_uploader("Upload Kinovea CSV", type="csv")
             submitted = st.form_submit_button("Upload")
 
-            if submitted and (youtube_link or video_path):
+            if submitted and (youtube_link or video_source):
                 # Save CSV if provided
                 csv_path = None
                 if csv_file:
@@ -128,13 +146,8 @@ def main_app(user_email):
                     with open(csv_path, "wb") as f:
                         f.write(csv_file.read())
 
-                # Save video file if needed
-                if video_option == "Upload Video File" and uploaded_video:
-                    with open(video_path, "wb") as f:
-                        f.write(uploaded_video.read())
-
-                # Determine final video source
-                video_source = youtube_link if video_option == "YouTube Link" else video_path
+                # Finalize video source
+                final_video_source = youtube_link if video_option == "YouTube Link" else video_source
 
                 # DB insert
                 conn = sqlite3.connect(DB_PATH)
@@ -154,16 +167,13 @@ def main_app(user_email):
                 c.execute('''INSERT INTO sessions 
                              (player_id, date, session_name, video_source, kinovea_csv, notes)
                              VALUES (?, ?, ?, ?, ?, ?)''',
-                          (player_id, str(session_date), session_name, video_source, csv_path, notes))
+                          (player_id, str(session_date), session_name, final_video_source, csv_path, notes))
                 conn.commit()
                 conn.close()
                 st.success("✅ Session uploaded!")
 
             elif submitted:
                 st.warning("⚠️ Please upload a video (YouTube link or file).")
-
-            elif submitted:
-                st.warning("⚠️ Please upload both a CSV and a video or link.")
 
     # === TAB 2: View Sessions ===
     with tab2:
@@ -191,11 +201,14 @@ def main_app(user_email):
                 video_source = session_row["video_source"]
 
                 if video_source.startswith("http"):
-                    video_id = extract_youtube_id(video_source)
-                    if video_id:
-                        st.video(f"https://www.youtube.com/embed/{video_id}")
+                    if "youtube.com" in video_source or "youtu.be" in video_source:
+                        video_id = extract_youtube_id(video_source)
+                        if video_id:
+                            st.video(f"https://www.youtube.com/embed/{video_id}")
+                        else:
+                            st.warning("⚠️ Could not extract video ID. Check the YouTube link.")
                     else:
-                        st.warning("⚠️ Could not extract video ID. Check the YouTube link.")
+                        st.video(video_source)
                 else:
                     if os.path.exists(video_source):
                         st.video(video_source)
@@ -244,8 +257,7 @@ def main_app(user_email):
             st.markdown("### Left Player")
             player_left = st.selectbox("Select Player (Left)", player_df["name"], key="left_player")
             player_left_id = int(player_df[player_df["name"] == player_left]["id"].values[0])
-            left_sessions = pd.read_sql_query("SELECT * FROM sessions WHERE player_id = ?", conn,
-                                              params=(player_left_id,))
+            left_sessions = pd.read_sql_query("SELECT * FROM sessions WHERE player_id = ?", conn, params=(player_left_id,))
 
             if left_sessions.empty:
                 st.warning("No sessions found for this player.")
@@ -258,11 +270,14 @@ def main_app(user_email):
                     video_source = left_row["video_source"]
 
                     if video_source.startswith("http"):
-                        video_id = extract_youtube_id(video_source)
-                        if video_id:
-                            st.video(f"https://www.youtube.com/embed/{video_id}")
+                        if "youtube.com" in video_source or "youtu.be" in video_source:
+                            video_id = extract_youtube_id(video_source)
+                            if video_id:
+                                st.video(f"https://www.youtube.com/embed/{video_id}")
+                            else:
+                                st.warning("⚠️ Invalid YouTube link for left session.")
                         else:
-                            st.warning("⚠️ Invalid YouTube link for left session.")
+                            st.video(video_source)
                     else:
                         if os.path.exists(video_source):
                             st.video(video_source)
@@ -286,8 +301,7 @@ def main_app(user_email):
                                     default=available_metrics_left,
                                     key="metric_select_left"
                                 )
-                                plot_custom_lines(df_left, chart_key="left_plot",
-                                                  selected_metrics=selected_left_metrics)
+                                plot_custom_lines(df_left, chart_key="left_plot", selected_metrics=selected_left_metrics)
                             else:
                                 st.warning("Column 'Time (ms)' not found in left session.")
                                 st.line_chart(df_left.select_dtypes(include=['float', 'int']))
@@ -299,8 +313,7 @@ def main_app(user_email):
             st.markdown("### Right Player")
             player_right = st.selectbox("Select Player (Right)", player_df["name"], key="right_player")
             player_right_id = int(player_df[player_df["name"] == player_right]["id"].values[0])
-            right_sessions = pd.read_sql_query("SELECT * FROM sessions WHERE player_id = ?", conn,
-                                               params=(player_right_id,))
+            right_sessions = pd.read_sql_query("SELECT * FROM sessions WHERE player_id = ?", conn, params=(player_right_id,))
 
             if right_sessions.empty:
                 st.warning("No sessions found for this player.")
@@ -313,11 +326,14 @@ def main_app(user_email):
                     video_source = right_row["video_source"]
 
                     if video_source.startswith("http"):
-                        video_id = extract_youtube_id(video_source)
-                        if video_id:
-                            st.video(f"https://www.youtube.com/embed/{video_id}")
+                        if "youtube.com" in video_source or "youtu.be" in video_source:
+                            video_id = extract_youtube_id(video_source)
+                            if video_id:
+                                st.video(f"https://www.youtube.com/embed/{video_id}")
+                            else:
+                                st.warning("⚠️ Invalid YouTube link for right session.")
                         else:
-                            st.warning("⚠️ Invalid YouTube link for right session.")
+                            st.video(video_source)
                     else:
                         if os.path.exists(video_source):
                             st.video(video_source)
@@ -341,8 +357,7 @@ def main_app(user_email):
                                     default=available_metrics_right,
                                     key="metric_select_right"
                                 )
-                                plot_custom_lines(df_right, chart_key="right_plot",
-                                                  selected_metrics=selected_right_metrics)
+                                plot_custom_lines(df_right, chart_key="right_plot", selected_metrics=selected_right_metrics)
                             else:
                                 st.warning("Column 'Time (ms)' not found in right session.")
                                 st.line_chart(df_right.select_dtypes(include=['float', 'int']))
