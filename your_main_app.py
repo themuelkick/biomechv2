@@ -401,125 +401,80 @@ def main_app(user_email):
                         except Exception as e:
                             st.error(f"Error reading right CSV: {e}")
 
-    # === TAB 4: Admin Tools ===
+    tab4 = st.tabs(["Admin"])[0]
+
     with tab4:
-        with st.expander(" Admin Tools"):
-            st.subheader("Delete Players or Sessions")
+        st.header("Admin Tools")
 
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
 
-            players_df = pd.read_sql("SELECT * FROM players", conn)
-            sessions_df = pd.read_sql("SELECT * FROM sessions", conn)
+        players_df = pd.read_sql("SELECT * FROM players", conn)
+        sessions_df = pd.read_sql("SELECT * FROM sessions", conn)
 
-            # ---- Delete a Session ----
-            st.markdown("### Delete a Session")
+        # ---- Delete a Session ----
+        st.subheader("Delete a Session")
 
-            selected_admin_player = st.selectbox("Select a player (to delete their session)", players_df["name"],
-                                                 key="admin_player_select")
-            admin_player_id = int(players_df[players_df["name"] == selected_admin_player]["id"].values[0])
+        selected_admin_player = st.selectbox("Select a player (to delete their session)", players_df["name"], key="admin_player_select")
+        admin_player_id = int(players_df[players_df["name"] == selected_admin_player]["id"].values[0])
 
-            player_sessions_df = pd.read_sql("SELECT * FROM sessions WHERE player_id = ?", conn,
-                                             params=(admin_player_id,))
-            player_sessions_df["label"] = player_sessions_df["date"] + " - " + player_sessions_df["session_name"]
+        player_sessions_df = pd.read_sql("SELECT * FROM sessions WHERE player_id = ?", conn, params=(admin_player_id,))
+        player_sessions_df["label"] = player_sessions_df["date"] + " - " + player_sessions_df["session_name"]
 
-            if player_sessions_df.empty:
-                st.warning("This player has no sessions.")
-            else:
-                session_to_delete = st.selectbox("Select a session to delete", player_sessions_df["label"],
-                                                 key="admin_session_select")
+        if player_sessions_df.empty:
+            st.warning("This player has no sessions.")
+        else:
+            session_to_delete = st.selectbox("Select a session to delete", player_sessions_df["label"], key="admin_session_select")
 
-                if st.button(" Delete Selected Session"):
-                    session_row = player_sessions_df[player_sessions_df["label"] == session_to_delete].iloc[0]
-                    csv_path = session_row["kinovea_csv"]
-                    video_source = session_row["video_source"]
+            if st.button("🗑️ Delete Selected Session"):
+                session_row = player_sessions_df[player_sessions_df["label"] == session_to_delete].iloc[0]
+                csv_path = session_row["kinovea_csv"]
+                video_source = session_row["video_source"]
 
-                    try:
-                        if not csv_path.startswith("http") and os.path.exists(csv_path):
-                            os.remove(csv_path)
-                        if video_source and isinstance(video_source, str) and not video_source.startswith("http"):
-                            if os.path.exists(video_source):
-                                os.remove(video_source)
+                # Delete from Supabase
+                try:
+                    if csv_path and csv_path.startswith("https://"):
+                        csv_filename = csv_path.split("/")[-1]
+                        supabase.storage.from_("csvs").remove([csv_filename])
+                    if video_source and video_source.startswith("https://"):
+                        video_filename = video_source.split("/")[-1]
+                        supabase.storage.from_("videos").remove([video_filename])
+                except Exception as e:
+                    st.warning(f"Warning: Failed to delete file(s) from Supabase. {e}")
 
-                        c.execute("DELETE FROM sessions WHERE id = ?", (session_row["id"],))
-                        conn.commit()
-
-                        st.success(f"✅ Deleted session: {session_to_delete}")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error deleting session: {e}")
-
-            # ---- Delete a Player ----
-            st.markdown("---")
-            st.markdown("### Delete a Player (Only if they have no sessions)")
-
-            player_names = players_df["name"].tolist()
-            selected_player = st.selectbox("Select a player to delete", player_names, key="delete_player")
-            player_row = players_df[players_df["name"] == selected_player].iloc[0]
-
-            player_sessions = sessions_df[sessions_df["player_id"] == player_row["id"]]
-
-            if not player_sessions.empty:
-                st.warning("This player has sessions and cannot be deleted. Please delete all their sessions first.")
-            else:
-                if st.button(" Delete Selected Player"):
-                    try:
-                        c.execute("DELETE FROM players WHERE id = ?", (player_row["id"],))
-                        conn.commit()
-                        st.success("✅ Player deleted successfully.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error deleting player: {e}")
-
-            # ---- Clean Up Broken Sessions ----
-            st.markdown("---")
-            st.subheader(" Clean Up Broken Sessions")
-
-            if st.button("Remove Sessions with Missing CSVs or Local Videos"):
-                removed_count = 0
-                sessions_df = pd.read_sql("SELECT * FROM sessions", conn)
-
-                for _, row in sessions_df.iterrows():
-                    csv_path = row["kinovea_csv"]
-                    video_source = row["video_source"]
-
-                    if is_missing_file(csv_path) or is_missing_file(video_source):
-                        try:
-                            c.execute("DELETE FROM sessions WHERE id = ?", (row["id"],))
-                            conn.commit()
-                            removed_count += 1
-                        except Exception as e:
-                            st.error(f" Error deleting session {row['session_name']}: {e}")
-
-                if removed_count > 0:
-                    st.success(f"✅ Removed {removed_count} broken session(s) with missing CSV or local video.")
+                # Delete from local DB
+                try:
+                    c.execute("DELETE FROM sessions WHERE id = ?", (session_row["id"],))
+                    conn.commit()
+                    st.success(f"✅ Deleted session: {session_to_delete}")
                     st.rerun()
-                else:
-                    st.info("No broken sessions found.")
+                except Exception as e:
+                    st.error(f"Error deleting session: {e}")
 
-            # ---- Clean Up Orphaned Players ----
-            st.markdown("---")
-            st.subheader(" Clean Up Players With No Sessions")
+        # ---- Delete a Player ----
+        st.markdown("---")
+        st.subheader("Delete a Player (Only if they have no sessions)")
 
-            if st.button("Remove Players With No Sessions"):
-                orphaned_players = pd.read_sql(
-                    "SELECT * FROM players WHERE id NOT IN (SELECT DISTINCT player_id FROM sessions)",
-                    conn
-                )
-                count = 0
-                for _, row in orphaned_players.iterrows():
-                    try:
-                        c.execute("DELETE FROM players WHERE id = ?", (row["id"],))
-                        conn.commit()
-                        count += 1
-                    except Exception as e:
-                        st.error(f"Error deleting player {row['name']}: {e}")
+        player_names = players_df["name"].tolist()
+        selected_player = st.selectbox("Select a player to delete", player_names, key="delete_player")
+        player_row = players_df[players_df["name"] == selected_player].iloc[0]
 
-                if count > 0:
-                    st.success(f"✅ Removed {count} player(s) with no sessions.")
+        player_sessions = sessions_df[sessions_df["player_id"] == player_row["id"]]
+
+        if not player_sessions.empty:
+            st.warning("This player has sessions and cannot be deleted. Please delete all their sessions first.")
+        else:
+            if st.button("🗑️ Delete Selected Player"):
+                try:
+                    c.execute("DELETE FROM players WHERE id = ?", (player_row["id"],))
+                    conn.commit()
+                    st.success("✅ Player deleted successfully.")
                     st.rerun()
-                else:
-                    st.info("No players without sessions found.")
+                except Exception as e:
+                    st.error(f"Error deleting player: {e}")
+
+
+
     # Debug: Show raw data
     if st.checkbox(" Show Raw Database (Players + Sessions)", value=False):
         conn = sqlite3.connect(DB_PATH)
